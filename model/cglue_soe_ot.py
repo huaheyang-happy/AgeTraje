@@ -112,11 +112,14 @@ class CGLUESOE_OT_Trainer(Trainer):
         lam_triplet: float = 1.0, lam_ot: float = 1.0,
         triplet_margin: float = 0.1, ot_epsilon: float = 0.1,
         ot_max_iter: int = 100, ot_tau: float = 1.0,
+        min_adjacent_dist: float = 0.0, # New parameter for adjacent distance penalty
         modality_weight: Mapping[str, float] = None,
         optim: str = "Adam", lr: float = 1e-3,
         **kwargs,
     ) -> None:
         super().__init__(net)
+
+        self.min_adjacent_dist = min_adjacent_dist # Store the new parameter
 
         self.required_losses = []
         for k in self.net.keys:
@@ -233,7 +236,7 @@ class CGLUESOE_OT_Trainer(Trainer):
         # --- Triplet Loss ---
         u_mean_all = torch.cat([u[k].mean for k in net.keys], dim=0)
         y_onehot_all = torch.cat([y_onehot[k] for k in net.keys], dim=0)
-        triplet_loss = calculate_triplet_loss(u_mean_all, y_onehot_all, self.triplet_margin, net.device)
+        triplet_loss = calculate_triplet_loss(u_mean_all, y_onehot_all, self.triplet_margin, net.device, self.min_adjacent_dist)
 
         # --- Optimal Transport Loss ---
         ot_loss = calculate_minibatch_uot_loss(

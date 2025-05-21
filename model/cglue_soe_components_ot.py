@@ -98,12 +98,15 @@ def calculate_triplet_loss(
     u_all: torch.Tensor,
     y_onehot_all: torch.Tensor,
     margin: float,
-    device: torch.device
+    device: torch.device,
+    min_adjacent_dist: float = 0.0 # New parameter
 ) -> torch.Tensor:
     """
-    Calculates the Triplet Loss L_T based on CGLUE-SOE paper Eq. before (4).
+    Calculates the Triplet Loss L_T based on CGLUE-SOE paper Eq. before (4),
+    and adds a penalty for adjacent distances being too small.
 
     L_T = (1/C) * sum_{c=1}^{C-2} sum_{h=c+2}^{C} max(0, d(c, c+1) + delta - d(c, h))^2
+    + penalty_weight * sum_{c=1}^{C-1} max(0, min_adjacent_dist - d(c, c+1))
 
     Parameters
     ----------
@@ -115,6 +118,8 @@ def calculate_triplet_loss(
         The margin delta for the triplet loss.
     device
         The torch device.
+    min_adjacent_dist
+        The minimum distance to enforce between adjacent class centroids.
 
     Returns
     -------
@@ -131,15 +136,15 @@ def calculate_triplet_loss(
     for c in range(num_classes):
         class_mask = y_onehot_all[:, c].bool()
         if class_mask.sum() == 0:
-            # Handle cases where a class might not be in the current batch
-            # Return 0 loss for this batch (simplest)
-            # print(f"Warning: Class {c} not found in current batch for triplet loss.") # Optional warning
+            # If a class is not present in the batch, we cannot calculate its centroid.
+            # For simplicity, we return 0.0 for the entire triplet loss in this batch.
+            # A more sophisticated approach might involve accumulating losses over batches
+            # or using a global centroid estimate, but that adds complexity.
             return torch.tensor(0.0, device=device)
         centroids.append(u_all[class_mask].mean(dim=0))
 
     # This check might be redundant if we return 0 above, but good safeguard
     if len(centroids) != num_classes:
-        # print(f"Warning: Number of centroids ({len(centroids)}) does not match num_classes ({num_classes}).")
         return torch.tensor(0.0, device=device)
 
     centroids = torch.stack(centroids) # [num_classes, z_dim]
@@ -162,16 +167,37 @@ def calculate_triplet_loss(
             loss_term = torch.sqrt(d_c_cp1_sq + EPS) + margin - torch.sqrt(d_c_h_sq + EPS)
 
             # Apply max(0, ...) (hinge loss)
-            squared_hinge_loss = F.relu(loss_term)
-            triplet_loss_sum += squared_hinge_loss
+            hinge_loss = F.relu(loss_term)
+            triplet_loss_sum += hinge_loss
             num_valid_triplets += 1
 
-    # Average the loss over the number of valid triplets computed
+    # Average the triplet loss over the number of valid triplets computed
     if num_valid_triplets > 0:
         triplet_loss = triplet_loss_sum / num_valid_triplets
     else:
-        # This case might happen if num_classes is exactly 3, the loops won't run
         triplet_loss = torch.tensor(0.0, device=device)
+
+    # --- Add penalty for adjacent distances being too small ---
+    adjacent_penalty_loss = torch.tensor(0.0, device=device)
+    num_adjacent_pairs = 0
+    if min_adjacent_dist > 0: # Only apply penalty if min_adjacent_dist is positive
+        for c in range(num_classes - 1): # Iterate through all adjacent pairs (c, c+1)
+            d_c_cp1_sq = torch.sum((centroids[c] - centroids[c+1])**2)
+            current_dist = torch.sqrt(d_c_cp1_sq + EPS)
+            
+            # Penalty if current_dist is less than min_adjacent_dist
+            # Use F.relu to ensure penalty is only applied when current_dist < min_adjacent_dist
+            penalty_term = F.relu(min_adjacent_dist - current_dist)
+            adjacent_penalty_loss += penalty_term
+            num_adjacent_pairs += 1
+
+    if num_adjacent_pairs > 0:
+        adjacent_penalty_loss /= num_adjacent_pairs
+    
+    # Combine triplet loss with adjacent distance penalty
+    # The weight for adjacent_penalty_loss is implicitly lam_triplet
+    # as it's added to triplet_loss before lam_triplet multiplication in Trainer.
+    triplet_loss = triplet_loss + adjacent_penalty_loss
 
     return triplet_loss
 
