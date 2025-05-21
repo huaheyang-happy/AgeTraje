@@ -161,8 +161,8 @@ def calculate_triplet_loss(
             # Add small epsilon for stability if distances can be zero
             loss_term = torch.sqrt(d_c_cp1_sq + EPS) + margin - torch.sqrt(d_c_h_sq + EPS)
 
-            # Apply max(0, ...)^2 (squared hinge loss)
-            squared_hinge_loss = F.relu(loss_term) ** 2
+            # Apply max(0, ...) (hinge loss)
+            squared_hinge_loss = F.relu(loss_term)
             triplet_loss_sum += squared_hinge_loss
             num_valid_triplets += 1
 

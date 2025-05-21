@@ -122,6 +122,19 @@ class CGLUESOE_OT_Trainer(Trainer):
         for k in self.net.keys:
             self.required_losses += [f"x_{k}_nll", f"x_{k}_kl", f"x_{k}_elbo"]
         self.required_losses += ["triplet_loss", "ot_loss", "total_loss"]
+
+        # Dynamically add age group distances to required_losses
+        # Assuming labels_ordered is available via net.modalities
+        first_modality_key = self.net.keys[0]
+        if first_modality_key in self.net.modalities and "labels_ordered" in self.net.modalities[first_modality_key]:
+            labels_ordered = self.net.modalities[first_modality_key]["labels_ordered"]
+            num_classes = len(labels_ordered)
+            for i in range(num_classes):
+                label_i = labels_ordered[i]
+                for j in range(i + 1, num_classes):
+                    label_j = labels_ordered[j]
+                    self.required_losses.append(f"dist_age_{label_i}_{label_j}")
+
         self.earlystop_loss = "total_loss" # Monitor total loss for early stopping
 
         self.lam_data = lam_data
@@ -237,6 +250,33 @@ class CGLUESOE_OT_Trainer(Trainer):
         losses = {"triplet_loss": triplet_loss, "ot_loss": ot_loss, "total_loss": total_loss}
         for k in net.keys:
             losses.update({f"x_{k}_nll": x_nll[k], f"x_{k}_kl": x_kl[k], f"x_{k}_elbo": x_elbo[k]})
+
+        # --- Calculate Age Group Distances ---
+        first_modality_key = net.keys[0]
+        labels_ordered = net.modalities[first_modality_key]["labels_ordered"]
+        num_classes = len(labels_ordered)
+
+        batch_centroids = {}
+        for i, label_str in enumerate(labels_ordered):
+            class_mask = y_onehot_all[:, i].bool()
+            if class_mask.sum() > 0:
+                batch_centroids[label_str] = u_mean_all[class_mask].mean(dim=0)
+
+        for i in range(num_classes):
+            label_i = labels_ordered[i]
+            if label_i not in batch_centroids:
+                continue
+
+            for j in range(i + 1, num_classes):
+                label_j = labels_ordered[j]
+                if label_j not in batch_centroids:
+                    continue
+
+                dist_sq = torch.sum((batch_centroids[label_i] - batch_centroids[label_j])**2)
+                dist = torch.sqrt(dist_sq)
+
+                losses[f"dist_age_{label_i}_{label_j}"] = dist
+
         return losses
 
     def train_step(self, engine: ignite.engine.Engine, data: List[torch.Tensor]) -> Mapping[str, torch.Tensor]:
